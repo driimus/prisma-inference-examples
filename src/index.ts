@@ -1,18 +1,8 @@
-import { Prisma } from "@prisma/client";
-import awsLambdaFastify from "@fastify/aws-lambda";
-import fastify, {
-  FastifyBaseLogger,
-  FastifyInstance,
-  FastifyTypeProviderDefault,
-  RawServerDefault,
-  RouteHandlerMethod,
-} from "fastify";
-import { prismaClient } from "./client";
-import { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
-import { Type } from "@sinclair/typebox";
-import { IncomingMessage, ServerResponse } from "http";
-import { Server } from "node:https";
-import { ResolveFastifyRequestType } from "fastify/types/type-provider";
+import awsLambdaFastify from '@fastify/aws-lambda';
+import { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
+import { Type } from '@sinclair/typebox';
+import fastify, { FastifyInstance } from 'fastify';
+import { prismaClient } from './client';
 
 export const app = fastify({
   logger: true,
@@ -29,7 +19,7 @@ app.post(
     },
   },
   async (req, res) => {
-    const { name, email } = req.body;
+    const { name = null, email } = req.body;
 
     const result = await prismaClient.user.create({
       data: {
@@ -51,12 +41,12 @@ app.post(
         content: Type.String(),
       }),
       headers: Type.Object({
-        "x-user-id": Type.Number(),
+        'x-user-id': Type.Number(),
       }),
     },
   },
   async (req, res) => {
-    const { "x-user-id": userId } = req.headers;
+    const { 'x-user-id': userId } = req.headers;
     const { title, content } = req.body;
 
     const result = await prismaClient.post.create({
@@ -72,7 +62,7 @@ app.post(
 );
 
 app.put(
-  "/post/:id/views",
+  '/post/:id/views',
   {
     schema: {
       params: Type.Object({
@@ -83,25 +73,21 @@ app.put(
   async (req, res) => {
     const { id } = req.params;
 
-    try {
-      const post = await prismaClient.post.update({
-        where: { id },
-        data: {
-          viewCount: {
-            increment: 1,
-          },
+    const post = await prismaClient.post.update({
+      where: { id },
+      data: {
+        viewCount: {
+          increment: 1,
         },
-      });
+      },
+    });
 
-      res.send(post);
-    } catch (error) {
-      res.send({ error: `Post with ID ${id} does not exist in the database` });
-    }
+    res.send(post);
   }
 );
 
 app.put(
-  "/publish/:id",
+  '/publish/:id',
   {
     schema: {
       params: Type.Object({
@@ -112,21 +98,16 @@ app.put(
   async (req, res) => {
     const { id } = req.params;
 
-    try {
-      const updatedPost = await prismaClient.post.update({
-        where: { id },
-        data: { published: true },
-      });
-      res.send(updatedPost);
-    } catch (error) {
-      res.send({ error: `Post with ID ${id} does not exist in the database` });
-    }
+    const updatedPost = await prismaClient.post.update({
+      where: { id },
+      data: { published: true },
+    });
+
+    res.send(updatedPost);
   }
 );
 
-app.delete<{
-  Params: IPostByIdParam;
-}>(
+app.delete(
   `/post/:id`,
   {
     schema: {
@@ -146,15 +127,85 @@ app.delete<{
   }
 );
 
-app.get("/users", async (req, res) => {
-  const users = await prismaClient.user.findMany();
-  res.send(users);
-});
+app.get(
+  '/users',
+  {
+    schema: {
+      headers: Type.Object({
+        'x-user-id': Type.Number(),
+      }),
+      response: {
+        200: Type.Object({
+          users: Type.Array(
+            Type.Object({
+              id: Type.Number(),
+              contactInfo: Type.Object({
+                email: Type.String(),
+              }),
+            })
+          ),
+        }),
+      },
+    },
+  },
+  async (req, res) => {
+    const currentUser = await prismaClient.user.findUniqueOrThrow({
+      where: { id: req.headers['x-user-id'] },
+    });
 
-app.get<{
-  Params: IPostByIdParam;
-}>(
-  "/user/:id/drafts",
+    const users = await prismaClient.user.findMany({
+      // only include emails in responses to administrators
+      select: { id: true, email: currentUser.isAdmin },
+    });
+
+    const transformedUserList = users.map(({ id, email }) => {
+      return { id, contactInfo: { email } };
+    });
+
+    req.log.info({ transformedUserList }, 'Responding with user list');
+
+    // should not be allowed
+    res.send({ users: transformedUserList });
+    // we can end up with something that looks like this, which is invalid
+    // res.send({ users: [{id: 1, contactInfo: { email: undefined}}] });
+  }
+);
+
+app.get(
+  '/user/:id',
+  {
+    schema: {
+      params: Type.Object({
+        id: Type.Number(),
+      }),
+      querystring: Type.Object({
+        includePosts: Type.Boolean({ default: false }),
+      }),
+    },
+  },
+  async (req, res) => {
+    const { id } = req.params;
+
+    const user = await prismaClient.user.findUniqueOrThrow({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        // optionally include the user's posts
+        // avoids querying extra data if it's not needed
+        posts: req.query.includePosts,
+      },
+    });
+
+    // this should not be allowed, `user.posts` might be undefined
+    req.log.info('Found user %s with %s posts', id, user.posts.length);
+
+    res.send(user);
+  }
+);
+
+app.get(
+  '/user/:id/drafts',
   {
     schema: {
       params: Type.Object({
@@ -177,9 +228,7 @@ app.get<{
   }
 );
 
-app.get<{
-  Params: IPostByIdParam;
-}>(
+app.get(
   `/post/:id`,
   {
     schema: {
@@ -198,118 +247,6 @@ app.get<{
   }
 );
 
-app.get<{
-  Params: IPostByIdParam;
-}>(
-  `/post/:id`,
-  {
-    schema: {
-      body: "not valid",
-    },
-  },
-  async (req, res) => {
-    const { id } = req.params;
-    req.body;
-    const post = await prismaClient.post.findUnique({
-      where: { id },
-    });
-    res.send(post);
-  }
-);
-// app.get<{
-//   Querystring: IFeedQueryString;
-// }>("/feed", async (req, res) => {
-//   const { searchString, skip, take, orderBy } = req?.query;
-
-//   const or: Prisma.ReviewWhereInput = searchString
-//     ? {
-//         OR: [
-//           { rating: { equals: Number(searchString) || undefined } },
-//           { content: { contains: searchString as string } },
-//         ],
-//       }
-//     : {};
-
-//   const posts = await prismaClient.review.findMany({
-//     where: {
-//       published: true,
-//       ...or,
-//     },
-//     include: { author: true },
-//     take: Number(take) || undefined,
-//     skip: Number(skip) || undefined,
-//   });
-
-//   res.send(posts);
-// });
-
-interface IFeedQueryString {
-  searchString: string | null;
-  skip: number | null;
-  take: number | null;
-  orderBy: Prisma.SortOrder | null;
-}
-
-interface IPostByIdParam {
-  id: number;
-}
-
-// app.listen(3000, (err) => {
-//   if (err) {
-//     console.error(err)
-//     process.exit(1)
-//   }
-//   console.log(`
-//   🚀 Server ready at: http://localhost:3000
-//   ⭐️ See sample requests: http://pris.ly/e/ts/rest-fastify#3-using-the-rest-api`)
-// })
-
-type Test = typeof app extends FastifyInstance ? true : false;
-type Test2 = FastifyTypeProviderDefault extends TypeBoxTypeProvider
-  ? true
-  : false;
-type Tested<T extends FastifyInstance> = { app: T };
-
-type Assigning = RouteHandlerMethod<
-  RawServerDefault,
-  IncomingMessage,
-  ServerResponse<IncomingMessage>,
-  any,
-  any,
-  any,
-  TypeBoxTypeProvider,
-  FastifyBaseLogger
->;
-
-type AssignedTo = RouteHandlerMethod<
-  RawServerDefault,
-  IncomingMessage,
-  ServerResponse<IncomingMessage>,
-  any,
-  any,
-  any,
-  FastifyTypeProviderDefault,
-  FastifyBaseLogger
->;
-
-type Tester = Parameters<Assigning> extends Parameters<AssignedTo>
-  ? true
-  : false;
-
-type One = (
-  arg1: ResolveFastifyRequestType<FastifyTypeProviderDefault, any, any>
-) => void;
-type Two = (
-  arg1: ResolveFastifyRequestType<TypeBoxTypeProvider, any, any>
-) => void;
-
-type First = ResolveFastifyRequestType<FastifyTypeProviderDefault, any, any>;
-type Second = ResolveFastifyRequestType<TypeBoxTypeProvider, any, any>;
-
-// type AssignToThis<T extends
-type Tested22 = Two extends One ? true : false;
-type TestType<T extends One> = T;
-type R = TestType<Two>;
-export const handler = awsLambdaFastify(app, {
+export const handler = awsLambdaFastify(app as unknown as FastifyInstance, {
   serializeLambdaArguments: false,
 });
